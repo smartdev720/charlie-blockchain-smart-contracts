@@ -151,6 +151,15 @@ contract Staking is Ownable, ReentrancyGuard {
         return (amount * rate) / 100;
     }
 
+    // Helper function to remove a stake from the user's stakes array
+    function removeStake(User storage user, uint256 index) internal {
+        require(index < user.stakes.length, "Invalid index");
+
+        // Move the last element to the index to remove and pop the array
+        user.stakes[index] = user.stakes[user.stakes.length - 1];
+        user.stakes.pop();
+    }
+
     // Staking function
     function stake(uint256 amount, uint256 lockPeriod) external nonReentrant validLockPeriod(lockPeriod) {
         require(amount > 0, "Amount must be greater than 0");
@@ -248,74 +257,67 @@ contract Staking is Ownable, ReentrancyGuard {
     function withdraw(
         uint256 lockPeriod,
         uint256 leftStakePercent
-    ) external nonReentrant validLockPeriod(lockPeriod) returns (uint256) {
+    ) external nonReentrant validLockPeriod(lockPeriod) returns (bool) {
         User storage user = users[msg.sender];
         require(user.account != address(0), "User not found");
 
-        uint256 withdrawableAmount;
-        uint256 totalFee;
+        uint256 withdrawableAmount = 0;
+        uint256 rewardAmount;
+        uint256 totalFee = 0;
         bool foundStake = false;
+        bool stakeRemoved = false;
 
-        // Iterate through the user's stakes to find the matching lock period
         for (uint256 i = 0; i < user.stakes.length; i++) {
             StakedData storage selected = user.stakes[i];
-            
-            // Only process the stake with the matching lock period
+
+            // Process only the stake with the matching lock period
             if (selected.apy != lockPeriod) continue;
-            
-            // Check this user has already withdrawed
-            require(selected.apy > rewardRates[lockPeriod], "You have already withdrawed once");
 
-            // Check this user gets the permission to unstake
-            require(!hasLockPeriodPassed(selected.start, selected.apy), "You can't withdraw yet");
-            
-            // Calculate reward for the current stake
-            uint256 rewardAmount = calculateReward(selected.stakedAmount, selected.rewardRate);
-
-            // Calculate unstake amount (the amount to be withdrawn)
-            uint256 unstakeAmount = selected.stakedAmount - (selected.stakedAmount * leftStakePercent) / 100;
-
-            // Calculate the fee on the reward and unstake amount
-            totalFee = ((rewardAmount + unstakeAmount) * fee) / 100;
-
-            // Total withdrawable amount (after fee)
-            withdrawableAmount = unstakeAmount + rewardAmount - totalFee;
-
-            // Get extra reward rate based on left stake percentage
-            uint256 _extraRewardRate = getExtraRewardRateForExtendAPY(leftStakePercent, lockPeriod);
-            
-            // Conver the extra reward rate
-            uint256 extraRewardRate = _extraRewardRate / 100;
-
-            // Apply the extra reward rate to the user's current reward rate
-            selected.rewardRate += extraRewardRate;
-
-            // Update the user's reward and withdraw amounts
-            selected.rewardAmount += rewardAmount;
-            selected.withdrawAmount += unstakeAmount + rewardAmount;
-
-            // Reduce the staked amount by the unstaked portion
-            selected.stakedAmount -= unstakeAmount;
-
-            // Mark that we found the relevant stake
             foundStake = true;
 
-            // Exit loop since we only process the first relevant stake
+            // Ensure the lock period has passed
+            require(hasLockPeriodPassed(selected.start, selected.apy), "You can't withdraw yet");
+
+            // Check if the stake should be removed
+            if (selected.rewardRate > rewardRates[lockPeriod]) {
+                // Calculate full withdrawable amount and fee before removal
+                rewardAmount = calculateReward(selected.stakedAmount, selected.rewardRate);
+                withdrawableAmount = selected.stakedAmount + rewardAmount;
+                totalFee = (withdrawableAmount * fee) / 100;
+
+                // Remove the stake from the array
+                removeStake(user, i);
+                stakeRemoved = true;
+                break;
+            }
+
+            // Partial withdrawal logic (stake not removed)
+            rewardAmount = calculateReward(selected.stakedAmount, selected.rewardRate);
+            uint256 unstakeAmount = (selected.stakedAmount * (100 - leftStakePercent)) / 100;
+
+            // Update stake data before any array modifications
+            uint256 _extraRewardRate = getExtraRewardRateForExtendAPY(leftStakePercent, lockPeriod);
+            selected.rewardRate += _extraRewardRate / 100;
+            selected.rewardAmount += rewardAmount;
+            selected.withdrawAmount += unstakeAmount + rewardAmount;
+            selected.stakedAmount -= unstakeAmount;
+
+            withdrawableAmount = unstakeAmount + rewardAmount;
+            totalFee = (withdrawableAmount * fee) / 100;
+
             break;
         }
 
-        // Ensure that we found a valid stake for the given lock period
         require(foundStake, "No stake found for this lock period");
 
-        // Transfer the withdrawable amount to the user
-        token.transfer(msg.sender, withdrawableAmount);
-
-        // Transfer the fee to the owner
+        // Transfer the withdrawable amount and fee
+        token.transfer(msg.sender, withdrawableAmount - totalFee);
         token.transfer(owner(), totalFee);
 
-        // Emit the Withdraw event
         emit Withdraw(msg.sender, withdrawableAmount);
 
-        return withdrawableAmount;
+        return stakeRemoved;
     }
+
+
 }

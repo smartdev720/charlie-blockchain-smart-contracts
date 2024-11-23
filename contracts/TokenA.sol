@@ -7,7 +7,7 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 contract TokenA is ERC20 {
     constructor() ERC20("TokenA", "TA") {
         // Mint the initial supply to the contract deployer
-        _mint(msg.sender, 10*10*decimal);
+        _mint(msg.sender, 10 * 10 * 10**decimals());
     }
 
     /**
